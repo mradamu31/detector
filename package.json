@@ -1,0 +1,23 @@
+{
+  "name": "@fingertrap/detector",
+  "version": "0.1.0",
+  "description": "Open-source AI prompt injection and data exfiltration detector. Drop-in security for LLM agents.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./detector": "./detector.js",
+    "./scanner": "./scanner.js"
+  },
+  "keywords": ["ai-security", "prompt-injection", "llm", "agent-security", "fingertrap"],
+  "license": "MIT",
+  "homepage": "https://fingertrap.io",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/agentphoenix483/detector"
+  },
+  "bugs": {
+    "url": "https://github.com/agentphoenix483/detector/issues"
+  },
+  "files": ["index.js", "detector.js", "scanner.js", "README.md", "LICENSE"]
+}
