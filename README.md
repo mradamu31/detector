@@ -1,11 +1,14 @@
 # @fingertrap/detector
 
 [![MIT License](https://img.shields.io/badge/license-MIT-red.svg)](./LICENSE)
-[![npm](https://img.shields.io/badge/npm-%40fingertrap%2Fdetector-red)](https://www.npmjs.com/package/@fingertrap/detector)
+[![npm](https://img.shields.io/npm/v/@fingertrap/detector?color=red)](https://www.npmjs.com/package/@fingertrap/detector)
+[![npm downloads](https://img.shields.io/npm/dw/@fingertrap/detector?color=red)](https://www.npmjs.com/package/@fingertrap/detector)
+[![OWASP LLM Top 10](https://img.shields.io/badge/OWASP-LLM%20Top%2010-red)](https://owasp.org/www-project-top-10-for-large-language-model-applications/)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](./CONTRIBUTING.md)
 
 **Open-source AI agent security. Drop-in prompt injection and data exfiltration detection.**
 
-> OpenAI just acquired Promptfoo — the only open-source AI red-teaming tool. So we built a finger trap.
+> The open-source AI security landscape just changed. So we built FingerTrap.
 
 ---
 
@@ -62,3 +65,11 @@ The open-source detector is the foundation. For production deployments:
 ## License
 
 MIT — see [LICENSE](./LICENSE)
+
+---
+
+## Contributing
+
+Found a bypass? New attack pattern? See [CONTRIBUTING.md](./CONTRIBUTING.md).
+
+Please read our [Code of Conduct](./CODE_OF_CONDUCT.md) before participating.
