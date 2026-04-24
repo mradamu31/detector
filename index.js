@@ -1,2 +1,2 @@
-export { scanContent, assessBehavior, normalize } from './detector.js';
+export { scanContent, assessBehavior, normalize, registerHoneypotTokens, clearHoneypotTokens } from './detector.js';
 export { fullScan } from './scanner.js';

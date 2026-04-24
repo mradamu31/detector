@@ -1,5 +1,15 @@
 // Local pattern matching detection engine
 
+// ── HONEYPOT TOKEN REGISTRY ──────────────────────────────────────
+// Register known canary tokens at runtime so scanContent() can detect them.
+const _honeypotTokens = new Set();
+export function registerHoneypotTokens(tokens) {
+  if (!Array.isArray(tokens)) tokens = [tokens];
+  for (const t of tokens) _honeypotTokens.add(String(t));
+}
+export function clearHoneypotTokens() { _honeypotTokens.clear(); }
+
+
 const HIGH_INJECTION = [
   // ── INSTRUCTION OVERRIDE ──────────────────────────────────────────
   /ignore\s+(?:all\s+)?(?:previous|prior|above|earlier|preceding)\s+(?:instructions?|guidelines?|rules?|prompts?|directions?)/i,
@@ -53,8 +63,8 @@ const HIGH_INJECTION = [
   // ── COMMAND EXECUTION ─────────────────────────────────────────────
   /execute\s+the\s+following\s+(?:shell\s+)?command/i,
   /run\s+(?:this|the\s+following)\s+(?:bash|shell|terminal)\s+command/i,
-  /\bcurl\s+(?:-[A-Za-z0-9]+\s+)*['"]?https?:\/\/\S+/i,
-  /\bwget\s+(?:-[A-Za-z0-9]+\s+)*['"]?https?:\/\/\S+/i,
+  // curl/wget only when explicitly instructed to AI
+  /(?:run|execute|use|do)\s+(?:this\s+)?(?:curl|wget)\s+command/i,
   // ── DATA EXFILTRATION ─────────────────────────────────────────────
   /\bsend\b.{0,60}\b(?:contents?|data|file|output|results?)\b.{0,80}https?:\/\//i,
   /(?:post|upload|exfiltrate|transmit)\s+(?:to|the\s+data\s+to)\s+https?:\/\//i,
@@ -143,6 +153,7 @@ const MEDIUM_INJECTION = [
 
 const HIGH_EXFIL = [
   /(sk-[a-zA-Z0-9]{20,})/,
+  /(sk-ant-[a-zA-Z0-9]{3,}-[a-zA-Z0-9\-]{20,})/, // Anthropic key format with hyphens,
   /(ANTHROPIC_API_KEY\s*[:=]\s*\S+)/i,
   /Bearer\s+[a-zA-Z0-9\-_]{20,}/,
   /(ghp_[a-zA-Z0-9]{36})/,
@@ -151,6 +162,11 @@ const HIGH_EXFIL = [
   /(?:print|output|show|list|display|dump|reveal|echo)\s+(?:all\s+)?(?:environment\s+variables?|env\s+vars?|\$ENV|\bprocess\.env\b)/i,
   /(?:OPENAI_API_KEY|ANTHROPIC_API_KEY|AWS_SECRET|DATABASE_URL|SECRET_KEY|PRIVATE_KEY|API_SECRET)\s*[:=]/i,
   /(?:extract|output|retrieve|get|fetch|dump)\s+(?:all\s+)?(?:api\s+(?:keys?|credentials?|secrets?)|credentials?|secrets?)\s+(?:from\s+)?(?:your\s+)?(?:configuration|config|env|environment|memory|context)/i,
+  // os.environ access of secret-adjacent key names (scoped — PATH/HOME/etc. excluded)
+  /os\.environ(?:\.get)?\s*\(\s*['"][^'"]*(?:KEY|SECRET|TOKEN|PASSWORD|CREDENTIAL|API)[^'"]*['"]/i,
+  // curl/wget with exfil-intent verb (unconditional — no prior risk required)
+  /\b(?:curl|wget)\s+(?:-[A-Za-z0-9\s]+)*https?:\/\/[^\s]+.{0,60}\b(?:exfiltrate|steal|harvest|dump|collect)\b/i,
+  /\b(?:exfiltrate|steal|harvest)\b.{0,80}\b(?:curl|wget|fetch|requests?\.(?:get|post))\b/i,
   /(?:format|output|return)\s+(?:them|it|credentials?|keys?)\s+as\s+(?:json|yaml|xml|csv|plain\s+text)/i,
 ];
 
@@ -322,15 +338,7 @@ export function normalize(content) {
     content += '\n[ROT13]:' + rot13;
   }
 
-  const b64Chunks = content.match(/(?:[A-Za-z0-9+/]{4}){5,}={0,2}/g) || [];
-  const decoded = [];
-  for (const chunk of b64Chunks) {
-    try {
-      const dec = Buffer.from(chunk, 'base64').toString('utf8');
-      if (/^[\x20-\x7E\s]{10,}$/.test(dec)) decoded.push(dec);
-    } catch (_) {}
-  }
-  if (decoded.length) content += '\n[DECODED]:' + decoded.join(' ');
+  // Base64 decode moved to scanContent() to access rawContent before leet normalization
   return content;
 }
 
@@ -349,9 +357,51 @@ const DESPLIT_INJECTION_KEYWORDS = [
 ];
 
 export function scanContent(content) {
-  content = normalize(content);
+  const rawContent = typeof content === 'string' ? content : String(content);
+  content = normalize(rawContent);
+  // Base64 decode on rawContent (pre-normalization) to avoid leet/homoglyph corruption
+  // Match standard base64: 20+ chars in groups of 4 (with 1-2 char remainder + padding)
+  const b64Chunks = rawContent.match(/[A-Za-z0-9+/]{20,}(?:[A-Za-z0-9+/]{0,2}={0,2})?/g) || [];
+  const b64Decoded = [];
+  for (const chunk of b64Chunks) {
+    try {
+      const dec = Buffer.from(chunk, 'base64').toString('utf8');
+      if (/^[\x20-\x7E\s]{10,}$/.test(dec)) b64Decoded.push(dec);
+    } catch (_) {}
+  }
+  if (b64Decoded.length) content += '\n[DECODED]:' + b64Decoded.join(' ');
   const flags = [];
   let risk = 'none';
+
+  // ── HONEYPOT CHECK ────────────────────────────────────────────────
+  // 1. Exact-match registered canary tokens
+  for (const tok of _honeypotTokens) {
+    if (rawContent.includes(tok)) {
+      flags.push('honeypot_triggered');
+      risk = 'high';
+      break;
+    }
+  }
+  // 2. Pattern-based: detect common fake-key markers
+  if (!flags.includes('honeypot_triggered')) {
+    const HONEYPOT_PATTERNS = [
+      /sk-(?:ant-api\d+-)?proj1x[A-Za-z0-9_\-]{8,}/,
+      /sk-proj1x[A-Za-z0-9_\-]{8,}/,
+      /ghp_proj1x[A-Za-z0-9]{8,}/,
+      /Bearer\s+proj1x[A-Za-z0-9_\-]{8,}/,
+      /(?:sk|key|token|npm)-(?:ant-)?(?:fake|nobode|honeypot|canary|trap)-[A-Za-z0-9]{6,}/i,
+      /AWS_SECRET_ACCESS_KEY=proj1x[A-Za-z0-9+\/]{8,}/,
+      /AKIAPROJ1X[A-Z0-9]{8,}/,
+      /password=proj1x[A-Za-z0-9!@#$%^&*]{4,}/i,
+    ];
+    for (const re of HONEYPOT_PATTERNS) {
+      if (re.test(rawContent)) {
+        flags.push('honeypot_triggered');
+        if (risk === 'none') risk = 'high';
+        break;
+      }
+    }
+  }
 
   for (const re of HIGH_INJECTION) {
     if (re.test(content)) {
@@ -517,12 +567,7 @@ export function scanContent(content) {
     flags.push('prompt_injection');
   }
 
-  // network_access: any external URL alongside an injection/exfil flag
-  if (!flags.includes('network_access') && /https?:\/\/[^\s'"`)]{8,}/i.test(content)) {
-    if (flags.includes('prompt_injection') || flags.includes('data_exfiltration') || flags.includes('indirect_injection')) {
-      flags.push('network_access');
-    }
-  }
+  // [network_access check moved below dangerous_command — see end of function]
 
   // data_exfiltration: exfil-intent content that landed in prompt_injection bucket
   const EXFIL_INTENT = [
@@ -560,6 +605,24 @@ export function scanContent(content) {
     }
   }
 
+  // dangerous_command: pipe-to-shell (ungated — always high risk regardless of prior flags)
+  const PIPE_TO_SHELL = [
+    /\b(?:curl|wget|nc|ncat)\b.{0,120}\|\s*(?:bash|sh|zsh|fish|python|perl|ruby)/i,
+    // Python/shell code execution patterns — ungated
+    /\bos\.system\s*\(/i,
+    /\bsubprocess\s*\.\s*(?:run|call|Popen|check_output)\s*\(/i,
+    /\beval\s*\(\s*(?:compile|__import__|exec)/i,
+  ];
+  if (!flags.includes('dangerous_command')) {
+    for (const re of PIPE_TO_SHELL) {
+      if (re.test(content)) {
+        flags.push('dangerous_command');
+        if (risk === 'none') risk = 'high';
+        break;
+      }
+    }
+  }
+
   // dangerous_command: destructive shell commands — always fire regardless of current risk
   const DESTRUCTIVE_SHELL = [
     /\brm\s+(?:-[a-zA-Z]*f[a-zA-Z]*\s+|--force\s+).{0,60}(?:\/\s*$|\/\s+--|--no-preserve)/i, // rm -rf / or rm -rf /* variants
@@ -585,14 +648,16 @@ export function scanContent(content) {
 
   // dangerous_command: shell execution / exfil patterns (fires on medium+ risk)
   const SHELL_INTENT = [
-    /\b(?:curl|wget|nc|ncat)\b.{0,60}https?:\/\//i,
+    // curl/wget only dangerous when piped to shell or explicitly exfil-targeted
+    /\b(?:curl|wget|nc|ncat)\b.{0,60}\|\s*(?:bash|sh|zsh|python|perl)/i,
     /\brequests?\s*\.\s*(?:post|get)\s*\(/i,
     /os\.system\s*\(/i,
     /subprocess\s*\.\s*(?:run|call|Popen)\s*\(/i,
     /exec\s*\(\s*['"`]/i,
     /fetch\s*\(.{0,80}process\.env/i,
     /JSON\.stringify\s*\(\s*(?:dict\s*\()?\s*(?:os\.environ|process\.env)\s*\)/i,
-    /\b(?:curl|wget)\s+.{0,60}\b(?:exfiltrate|steal|send|upload)\b/i,
+    // removed steal/send/upload (too broad, URL paths cause FPs) — exfiltrate/harvest in HIGH_EXFIL
+    /\b(?:curl|wget)\s+.{0,60}\b(?:exfiltrate|harvest)\b/i,
     /\bpython\b.{0,80}\b(?:requests|subprocess|os\.system)\b/i,
   ];
   if (!flags.includes('dangerous_command') && (risk === 'high' || risk === 'medium')) {
@@ -608,6 +673,16 @@ export function scanContent(content) {
   if (!flags.includes('sensitive_path_write') &&
       /~\/\.ssh\/id_(?:rsa|ed25519|ecdsa)|\/etc\/(?:passwd|shadow)|\/root\/\.ssh/i.test(content)) {
     flags.push('sensitive_path_write');
+  }
+
+  // network_access: external URLs alongside injection/exfil flags (runs after all flag detection)
+  // Exempt localhost/loopback/private ranges — legitimate internal tool calls
+  if (!flags.includes('network_access')) {
+    const urls = content.match(/https?:\/\/[^\s'"`)]{8,}/gi) || [];
+    const hasExternalUrl = urls.some(u => !/https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|::1|10\.|172\.(?:1[6-9]|2[0-9]|3[01])\.|192\.168\.)/i.test(u));
+    if (hasExternalUrl && (flags.includes('prompt_injection') || flags.includes('data_exfiltration') || flags.includes('indirect_injection') || flags.includes('dangerous_command'))) {
+      flags.push('network_access');
+    }
   }
 
   return {
