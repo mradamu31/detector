@@ -357,6 +357,19 @@ const DESPLIT_INJECTION_KEYWORDS = [
 ];
 
 export function scanContent(content) {
+  // Dynamic Canary Honeypot Check (Phase 2)
+  if (_honeypotTokens.size > 0) {
+    const rawLower = (content || '').toLowerCase();
+    for (const token of _honeypotTokens) {
+      if (token && rawLower.includes(token.toLowerCase())) {
+        return {
+          risk: 'high',
+          flags: ['data_exfiltration', 'honeypot_triggered'],
+          message: `Detected: data_exfiltration, honeypot_triggered (Canary Token match: ${token})`
+        };
+      }
+    }
+  }
   const rawContent = typeof content === 'string' ? content : String(content);
   content = normalize(rawContent);
   // Base64 decode on rawContent (pre-normalization) to avoid leet/homoglyph corruption
@@ -625,6 +638,14 @@ export function scanContent(content) {
 
   // dangerous_command: destructive shell commands — always fire regardless of current risk
   const DESTRUCTIVE_SHELL = [
+    /\bnohup\b|\bsetsid\b|\bdisown\b/i,                                  // Backgrounding/demonizing wrappers used in payloads
+    /\/dev\/tcp\/[0-9a-zA-Z._-]+\/[0-9a-zA-Z]+/i,                               // Bash plain TCP raw socket redirection (reverse shell)
+    /\bsockcat\b|\bncat\b|\bnetcat\b|\bsh\b.*-i\s+>\s*&\s*\/dev\/tcp\b/i, // Interactive reverse shells
+    /\bbase64\s+-[di]\b/i,                                                 // Base64 decoded shell payloads (execution injection bypasses)
+    /\bcurl\b.{1,150}\|\s*\bsh\b|\bwget\b.{1,150}\|\s*\bsh\b/i,       // Quick deployment pipes
+    /\bkill\s+-9\s+-1\b|\bkill\s+-KILL\s+-1\b/i,                      // Nuclear shutdown kill-all signals
+    /\bchattr\s+\+i\b/i,                                                 // File immutable locking (ransomware pattern)
+    /\bld_preload\b/i,                                                    // Process hijacking/preload hooks
     /\brm\s+(?:-[a-zA-Z]*f[a-zA-Z]*\s+|--force\s+).{0,60}(?:\/\s*$|\/\s+--|--no-preserve)/i, // rm -rf / or rm -rf /* variants
     /\brm\s+-[a-zA-Z]*(?:rf|fr|rvf|fvr|vrf|fv)[a-zA-Z]*\s+[^\s]/i,  // rm -rf / rm -fr / rm -rvf <path> etc.
     /\bmkfs\b/i,                                   // format disk
@@ -635,7 +656,7 @@ export function scanContent(content) {
     />\s*\/dev\/(?:sda|hda|nvme0n1)/i,             // redirect to block device
     /\bpoweroff\b|\breboot\b|\bshutdown\s+-(?:h|r)\s+now\b/i, // immediate shutdown/reboot
     /\bkill\s+-9\s+1\b|\bkillall\s+-9\b/i,        // kill init / killall
-  ];
+  ]; 
   if (!flags.includes('dangerous_command')) {
     for (const re of DESTRUCTIVE_SHELL) {
       if (re.test(content)) {
